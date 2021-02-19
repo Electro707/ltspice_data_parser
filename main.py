@@ -1,5 +1,7 @@
 #!/usr/bin/python3
-import os, sys
+import os
+import sys
+import typing
 import argparse
 import logging
 import enum
@@ -15,6 +17,7 @@ class LTSpiceDataAnalyzer:
 	class InvalidDataException(Exception):
 		def __init__(self):
 			super().__init__('Invalid data')
+
 	class LTSpiceDataAnalyzerGenericException(Exception):
 		def __init__(self, error_message):
 			super().__init__(error_message)
@@ -22,14 +25,15 @@ class LTSpiceDataAnalyzer:
 	class FileType(enum.Enum):
 		INVALID = 0
 		TRANSIENT = 1
-		FREQUENCY = 2
+		AC_FREQUENCY_PHASE = 2
+		AC_REAL_IMAG = 3
 
 	class DataType(enum.Enum):
 		FREQ_MAG_PHASE = 1
 		XY = 2
 
 	class StepInfo:
-		label: str = ''
+		label: typing.Union[str, None] = None
 		values: dict = {}
 
 	def __init__(self):
@@ -40,14 +44,12 @@ class LTSpiceDataAnalyzer:
 		self.probe_points: list = None
 		self.runs_label: list = None
 		self.data: dict = None
-		self.available_steps: list = None
 
 	def parse_data_file(self, file_name):
 		self.file_type = self.FileType.INVALID
 		self.probe_points = []
 		self.step_info = self.StepInfo()
 		self.data = {}
-		self.available_steps = []
 		try:
 			file = open(file_name, 'r', encoding='cp1252')
 		except IOError:
@@ -58,14 +60,14 @@ class LTSpiceDataAnalyzer:
 		line = file.readline()
 		line = line.split('\t')
 		if 'Freq.' in line[0]:
-			self.file_type = self.FileType.FREQUENCY
+			self.file_type = self.FileType.AC_FREQUENCY_PHASE
 		elif 'time' in line[0]:
 			self.file_type = self.FileType.TRANSIENT
 		self.log.debug('File Data Type: %s' % self.file_type)
 		# TODO: Add handling for more than 1 voltage probe point
 		self.probe_points.append(line[1])
 		# Read next line, see if there is a step info
-		if self.file_type == self.FileType.FREQUENCY:
+		if self.file_type == self.FileType.AC_FREQUENCY_PHASE:
 			self._parse_freq_file(file)
 
 		file.close()
@@ -75,7 +77,7 @@ class LTSpiceDataAnalyzer:
 		self.data[current_step_number] = []
 		for line in file:
 			if 'Step Information:' in line:
-				current_step_number = self._parse_step(line)
+				current_step_number = self._parse_parameter_step(line)
 				self.data[current_step_number] = []
 				continue
 			matches = re.match(r'^([^\t]*)\t\(([^dB]*)dB,([^°]*)°\)', line)
@@ -88,7 +90,7 @@ class LTSpiceDataAnalyzer:
 				'phase': float(matches.group(3)),
 			})
 
-	def _parse_step(self, line) -> int:
+	def _parse_parameter_step(self, line) -> int:
 		matches = re.match(r'^Step\ Information: ([^=]*)=([^\(\ ]*)[\ (]*Run: ([^\/]*)\/([^)]*)\)', line)
 		if len(matches.groups()) != 4:
 			self.log.error('Incorrect Step Information Format')
@@ -101,29 +103,34 @@ class LTSpiceDataAnalyzer:
 		except ValueError:
 			sys.exit(-1)
 		self.log.debug('Parsed step with label %s, value %s, step %s/%s', self.step_info.label, matches.group(2), current_step_number, matches.group(4))
-		self.available_steps.append(current_step_number)
 		return current_step_number
 
-	def plot_step(self, step_number: int):
-		if step_number not in self.available_steps:
-			raise self.LTSpiceDataAnalyzerGenericException('Step number not available')
+	def plot_parameter_step(self, step_number: int, plot_data: bool = True, ax=None):
 		x = [x['frequency'] for x in self.data[step_number]]
 		y = [x['amplitude'] for x in self.data[step_number]]
-		fig, ax = plt.subplots()
-		ax.plot(x, y)
-		ax.set_title('Plot for Step %s' % step_number)
-		ax.set_xlabel('Frequency')
-		ax.set_ylabel('Amplitude')
-		plt.show()
+		if plot_data is True:
+			fig, ax = plt.subplots()
+			ax.plot(x, y)
+			ax.set_title('Plot for Step %s' % step_number)
+			ax.set_xlabel('Frequency')
+			ax.set_ylabel('Amplitude')
+			plt.show()
+		else:
+			if ax is None:
+				raise self.LTSpiceDataAnalyzerGenericException('No Axis given while not plotting for single parameter')
+			ax.plot(x, y, label='%s=%s' % (self.step_info.label, self.step_info.values[step_number]))
 
-	def plot_all_steps(self, **kwargs):
+	def plot(self, **kwargs):
 		fig, ax = plt.subplots()
-		for step in self.available_steps:
-			x = [x['frequency'] for x in self.data[step]]
-			y = [x['amplitude'] for x in self.data[step]]
-			ax.plot(x, y, label='%s=%s' % (self.step_info.label,self.step_info.values[step]))
-		ax.legend(loc='upper left')
-		ax.set_title('Plot for All Steps')
+		if self.step_info.label is not None:
+			for step in self.step_info.values:
+				self.plot_parameter_step(step, plot_data=False, ax=ax)
+			ax.legend(loc='upper left')
+		else:
+			x = [x['frequency'] for x in self.data[0]]
+			y = [x['amplitude'] for x in self.data[0]]
+			ax.plot(x, y)
+		ax.set_title('Plot')
 		ax.set_xlabel('Frequency')
 		ax.set_ylabel('Amplitude')
 		if 'x_log' in kwargs:
@@ -143,19 +150,23 @@ def setup_logger():
 	stream_handler = logging.StreamHandler()
 	stream_handler.setLevel(logging.DEBUG)
 	stream_handler.setFormatter(formatter)
-
 	lg.addHandler(stream_handler)
+
+	logging.getLogger('matplotlib').setLevel(logging.INFO)
 
 
 def start_program():
 	parser = argparse.ArgumentParser(description='LTSpice Graph Text file to usable CSV tool')
-	parser.add_argument('file', metavar='F', type=str, help='The file to parse')
+	parser.add_argument('file', metavar='File', type=str, help='The file to parse')
+	parser.add_argument('-p', '--plot_all', action='store_true', help='Plot the parsed data')
 	args = parser.parse_args()
 	print(args.file)
 
 	data_parser = LTSpiceDataAnalyzer()
 	data_parser.parse_data_file(args.file)
-	data_parser.plot_all_steps(x_log=True)
+
+	if args.plot_all is not None:
+		data_parser.plot(x_log=True)
 
 
 if __name__ == '__main__':

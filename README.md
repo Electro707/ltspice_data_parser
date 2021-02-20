@@ -13,8 +13,8 @@ Here are some figure goals/features that I would like to implement to this proje
 
 - [x] CRITICAL: Parse a non-parameter step file handling (should be simple)
 - [ ] IMPORTANT: Parse AC analysis data with real/imaginary output instead of frequency/phase
-- [ ] IMPORTANT: Parse a transient output
-- [ ] IMPORTANT: Add arguments to the Python file in order to use some of the internal features
+- [x] IMPORTANT: Parse a transient output
+- [x] IMPORTANT: Add arguments to the Python file in order to use some of the internal features (like plotting)
 - [ ] IMPORTANT: Add CSV output capability
 - [ ] FUTURE: Add parameter step variable input from CLI 
 - [ ] FUTURE: Create an optional GUI wrapper

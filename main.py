@@ -14,6 +14,10 @@ HELP_SCREEN = "add the following switches after file to modify output.\n\n-c\t.c
 
 
 class LTSpiceDataAnalyzer:
+    class InvalidFileException(Exception):
+        def __init__(self):
+            super().__init__('Invalid LTSpice Data File')
+
     class InvalidDataException(Exception):
         def __init__(self):
             super().__init__('Invalid data')
@@ -44,6 +48,24 @@ class LTSpiceDataAnalyzer:
         self.probe_points: list = None
         self.runs_label: list = None
         self.data: dict = None
+    
+    @staticmethod
+    def matplotlib_latex_get_figsize(columnwidth, wf=0.5, hf=(5.**0.5-1.0)/2.0, ):
+      """
+        Copied from https://stackoverflow.com/questions/29187618/matplotlib-and-latex-beamer-correct-size
+        Parameters:
+        - wf [float]:  width fraction in columnwidth units
+        - hf [float]:  height fraction in columnwidth units.
+                       Set by default to golden ratio.
+        - columnwidth [float]: width of the column in latex. Get this from LaTeX 
+                               using \showthe\columnwidth
+      Returns:  [fig_width,fig_height]: that should be given to matplotlib
+      """
+      fig_width_pt = columnwidth*wf 
+      inches_per_pt = 1.0/72.27               # Convert pt to inch
+      fig_width = fig_width_pt*inches_per_pt  # width in inches
+      fig_height = fig_width*hf      # height in inches
+      return [fig_width, fig_height]
 
     def parse_data_file(self, file_name):
         self.file_type = self.FileType.INVALID
@@ -53,8 +75,7 @@ class LTSpiceDataAnalyzer:
         try:
             file = open(file_name, 'r', encoding='cp1252')
         except IOError:
-            self.log.error('Unable to open file')
-            return
+            raise self.InvalidFileException()
         self.log.debug('Started parsing the given file')
         # Read first line, and determine what kind of plot and the voltage/current points
         line = file.readline()
@@ -154,10 +175,18 @@ class LTSpiceDataAnalyzer:
     def plot(self, **kwargs):
         probe_point = None
         single_parameter_selection = None
+        export_latex_path = None
+        latex_plot_size = None
         if 'single_probe' in kwargs:
             probe_point = kwargs['single_probe']
         if 'single_parameter' in kwargs:
             single_parameter_selection = kwargs['single_parameter']
+        if 'export_latex_plot' in kwargs:
+            export_latex_path = kwargs['export_latex_plot']
+            if not export_latex_path.endswith('.pgf'):
+                export_latex_path += '.pgf'
+            if 'latex_plot_size' in kwargs:
+                latex_plot_size = kwargs['latex_plot_size']
 
         fig, ax = plt.subplots()
         if self.file_type == self.FileType.AC_FREQUENCY_PHASE:
@@ -167,7 +196,7 @@ class LTSpiceDataAnalyzer:
                         if self.param_step_info.values[step] != single_parameter_selection:
                             continue
                     self._plot_frequency_frepha(ax, step, probe_point)
-                ax.legend(loc='upper left')
+                ax.legend()
             else:
                 self._plot_frequency_frepha(ax, param_step_numb=0, single_probe_index=probe_point)
         elif self.file_type == self.FileType.TRANSIENT:
@@ -179,16 +208,39 @@ class LTSpiceDataAnalyzer:
                         if self.param_step_info.values[step] != single_parameter_selection:
                             continue
                     self._plot_transient_(ax, step, probe_point)
-                ax.legend(loc='upper left')
+                ax.legend()
             else:
                 self._plot_transient_(ax, param_step_numb=0, single_probe_index=probe_point)
-        ax.set_title('Plot')
-        ax.set_xlabel('Frequency')
-        ax.set_ylabel('Amplitude')
+        
+        if 'plot_name' in kwargs:
+            ax.set_title(kwargs['plot_name'])
+        else:
+            ax.set_title('Plot')
+        
+        # Add axis labels
+        if self.file_type == self.FileType.TRANSIENT:
+            ax.set_xlabel('Time (sec)')
+            ax.set_ylabel('Amplitude (V)')
+        elif self.file_type == self.FileType.AC_FREQUENCY_PHASE:
+            ax.set_xlabel('Frequency (Hz)')
+            ax.set_ylabel('Amplitude (db)')
+        
         if 'x_log' in kwargs:
             if kwargs['x_log'] is True:
                 ax.set_xscale('log', base=10)
         plt.show()
+        
+        if export_latex_path is not None:
+            matplotlib.use("pgf")
+            matplotlib.rcParams.update({
+              "pgf.texsystem": "lualatex",
+              'font.family': 'serif',
+              'text.usetex': True,
+              'pgf.rcfonts': False,
+            })
+            if latex_plot_size is not None:
+                fig.set_size_inches(self.matplotlib_latex_get_figsize(latex_plot_size, wf=1.0, hf=0.7))
+            fig.savefig("%s" % export_latex_path, bbox_inches='tight', transparent=True)
 
 
 def setup_logger():
@@ -212,21 +264,35 @@ def start_program():
     parser.add_argument('file', metavar='File', type=str, help='The file to parse')
     parser.add_argument('-p', '--plot_all', action='store_true', help='Plot the parsed data')
     parser.add_argument('--plot_log_x', action='store_true', help='Set to plot the x as a log axis')
+    parser.add_argument('--plot_name', type=str, default='', help='The name of the plot')
+    
+    parser.add_argument('--export_latex_plot', type=str, default='', help='Exports the plot as a LaTeX file')
+    parser.add_argument('--latex_plot_size', type=int, default=-1, help='The size of the LaTeX columnwidth to calculate the .pgf size')
+    
     parser.add_argument('--plot_single_probe', type=int, default=-1, help='Plot only a single probe point (indexed)')
     parser.add_argument('--plot_single_parameter', type=str, default='', help='Plot only a single parameter\'s output')
     args = parser.parse_args()
-    print(args.file)
 
     data_parser = LTSpiceDataAnalyzer()
-    data_parser.parse_data_file(args.file)
+    try:
+        data_parser.parse_data_file(args.file)
+    except data_parser.InvalidFileException:
+        print("Unable to open file %s" % args.file)
+        return
 
     if args.plot_all is True:
         kwag = {}
         kwag['x_log'] = args.plot_log_x
         if args.plot_single_probe != -1:
             kwag['single_probe'] = args.plot_single_probe
+        if args.plot_name != '':
+            kwag['plot_name'] = args.plot_name
         if args.plot_single_parameter != '':
             kwag['single_parameter'] = args.plot_single_parameter
+        if args.export_latex_plot != '':
+            kwag['export_latex_plot'] = args.export_latex_plot
+        if args.latex_plot_size != -1:
+            kwag['latex_plot_size'] = args.latex_plot_size
         data_parser.plot(**kwag)
 
 
